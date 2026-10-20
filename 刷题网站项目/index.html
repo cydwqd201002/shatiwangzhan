@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-font="m">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>刷题 · 2026 网页部招新考核题库</title>
+
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/views.css">
+
+  <style>
+    /* 入口集成：个别内联图标在现有组件里没有尺寸约束，避免 SVG 把按钮撑变形。 */
+    .crumb svg { width: 16px; height: 16px; flex: 0 0 auto; }
+    .tag svg   { width: 13px; height: 13px; flex: 0 0 auto; }
+  </style>
+
+  <script>
+    /* 首屏先把上次选择的主题/字号贴上，避免深色模式闪白。 */
+    (function () {
+      try {
+        var db = JSON.parse(localStorage.getItem('hqz.v1.db') || 'null');
+        var s = db && db.settings;
+        if (s && s.font) document.documentElement.setAttribute('data-font', s.font);
+        if (s && s.theme && s.theme !== 'auto') {
+          document.documentElement.setAttribute('data-theme', s.theme);
+        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (e) { /* localStorage 不可用时保持默认浅色 */ }
+    })();
+  </script>
+</head>
+<body>
+  <a class="skip" href="#view">跳到主要内容</a>
+
+  <header class="topbar">
+    <div class="topbar-in">
+      <a class="brand" href="#/" aria-label="回到首页">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15.5H6.5A2.5 2.5 0 0 0 4 21z"/>
+            <path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H19"/>
+          </svg>
+        </span>
+        <span>刷题<small>2026 网页部招新考核题库</small></span>
+      </a>
+
+      <nav class="nav" id="nav" aria-label="主导航"></nav>
+
+      <button class="icon-btn" id="account-btn" type="button" aria-label="账户" title="账户"></button>
+      <button class="icon-btn" id="theme-btn" type="button" aria-label="切换主题" title="切换主题"></button>
+    </div>
+  </header>
+
+  <main class="view" id="view" tabindex="-1"></main>
+
+  <div id="overlay-root"></div>
+  <div class="toast-root" id="toast-root" aria-live="polite"></div>
+  <div class="pomo-root" id="pomo-root" hidden></div>
+
+  <noscript>
+    <p style="max-width:640px;margin:40px auto;padding:0 20px;text-align:center">
+      这个页面需要启用 JavaScript 才能运行。
+    </p>
+  </noscript>
+
+  <!-- 顺序有依赖：题库数据 → 基础工具/判题 → 数据索引 → 存储 → 答题引擎 → 视图 -->
+  <script src="js/data/banks.js" charset="utf-8"></script>
+  <script src="js/core/util.js" charset="utf-8"></script>
+  <script src="js/core/grading.js" charset="utf-8"></script>
+  <script src="js/core/data.js" charset="utf-8"></script>
+  <script src="js/core/store.js" charset="utf-8"></script>
+  <script src="js/core/engine.js" charset="utf-8"></script>
+  <script src="js/core/i18n.js" charset="utf-8"></script>
+  <script src="js/core/comments.js" charset="utf-8"></script>
+  <script src="js/core/audio.js" charset="utf-8"></script>
+  <script src="js/core/profile.js" charset="utf-8"></script>
+  <script src="js/views/ui.js" charset="utf-8"></script>
+  <script src="js/views/review.js" charset="utf-8"></script>
+  <script src="js/views/home.js" charset="utf-8"></script>
+  <script src="js/views/setup.js" charset="utf-8"></script>
+  <script src="js/views/quiz.js" charset="utf-8"></script>
+  <script src="js/views/wrong.js" charset="utf-8"></script>
+  <script src="js/views/favorites.js" charset="utf-8"></script>
+  <script src="js/views/history.js" charset="utf-8"></script>
+  <script src="js/views/search.js" charset="utf-8"></script>
+  <script src="js/views/quality.js" charset="utf-8"></script>
+  <script src="js/views/settings.js" charset="utf-8"></script>
+  <script src="js/views/trial.js" charset="utf-8"></script>
+
+  <script>
+    /* ==========================================================================
+       最小应用控制器 HZQ.app
+       只负责：路由、会话、开始练习、主题、搜题。业务规则都在 core 里。
+       ========================================================================== */
+    window.HZQ = window.HZQ || {};
+    HZQ.app = (function () {
+      'use strict';
+
+      if (!HZQ.util || !HZQ.data || !HZQ.views || !HZQ.engine || !HZQ.store) {
+        return {
+          go: function () {},
+          start: function () {},
+          session: function () { return null; },
+          setSession: function () {},
+          toggleTheme: function () {},
+          setTheme: function () {},
+          openSearch: function () {}
+        };
+      }
+
+      var M = HZQ.util, U = HZQ.ui, el = M.el;
+      var viewEl = document.getElementById('view');
+      var navEl = document.getElementById('nav');
+      var themeBtn = document.getElementById('theme-btn');
+      var accountBtn = document.getElementById('account-btn');
+      var pomoRoot = document.getElementById('pomo-root');
+      var session = null;
+      var active = null;             // { view, mounted }
+      var NAV = [
+        { href: '#/', key: 'home', label: '首页', icon: 'home' },
+        { href: '#/wrong', key: 'wrong', label: '错题本', icon: 'refresh' },
+        { href: '#/favorites', key: 'favorites', label: '收藏', icon: 'star' },
+        { href: '#/history', key: 'history', label: '记录', icon: 'chart' }
+      ];
+
+      /* ------------------------------ 路由 ------------------------------ */
+      function parseHash() {
+        var raw = location.hash || '#/';
+        var cut = raw.indexOf('?');
+        var path = cut >= 0 ? raw.slice(0, cut) : raw;
+        var query = {};
+        if (cut >= 0) {
+          raw.slice(cut + 1).split('&').forEach(function (pair) {
+            if (!pair) return;
+            var i = pair.indexOf('=');
+            var k = i >= 0 ? pair.slice(0, i) : pair;
+            var v = i >= 0 ? pair.slice(i + 1) : '';
+            try { k = decodeURIComponent(k); v = decodeURIComponent(v); } catch (e) {}
+            query[k] = v;
+          });
+        }
+        var clean = path.replace(/^#\/?/, '');
+        var parts = clean ? clean.split('/').filter(Boolean).map(function (p) {
+          try { return decodeURIComponent(p); } catch (e) { return p; }
+        }) : [];
+        return { href: raw, parts: parts, query: query };
+      }
+
+      function go(hash) {
+        hash = hash || '#/';
+        if (location.hash === hash) render();
+        else location.hash = hash;
+      }
+
+      function viewFor(parts, query) {
+        query = query || {};
+        var name = parts[0] || '';
+        if (!name) return { view: HZQ.views.home, params: {} };
+        if (name === 'bank') return { view: HZQ.views.setup, params: { bankId: parts[1] || '', mode: query.mode || '' } };
+        if (name === 'quiz') return { view: HZQ.views.quiz, params: { bankId: parts[1] || '' } };
+        if (name === 'wrong') return { view: HZQ.views.wrong, params: {} };
+        if (name === 'favorites') return { view: HZQ.views.favorites, params: {} };
+        if (name === 'history') return { view: HZQ.views.history, params: {} };
+        if (name === 'search') return { view: HZQ.views.search, params: { q: query.q || '' } };
+        if (name === 'quality') return { view: HZQ.views.quality, params: { bankId: parts[1] || '' } };
+        if (name === 'settings') return { view: HZQ.views.settings, params: {} };
+        if (name === 'trial') return { view: HZQ.views.trial, params: {} };
+        if (name === 'result') return { view: null, params: { id: parts[1] || '' }, result: true };
+        return { view: null, params: {} };
+      }
+
+      function render() {
+        var route = parseHash();
+        var target = viewFor(route.parts, route.query);
+
+        if (active && active.mounted && active.view && active.view.unmount) {
+          try { active.view.unmount(); } catch (e) { console.error(e); }
+        }
+        active = null;
+        M.closeOverlay();
+        viewEl.innerHTML = '';
+        document.body.classList.remove('has-mobile-bar');
+
+        var node;
+        try {
+          if (target.result) node = resultPage(target.params.id);
+          else if (target.view) node = target.view.render(target.params);
+          else node = missingPage();
+        } catch (err) {
+          console.error('[HZQ.app] 页面渲染失败', err);
+          node = U.empty('alert', '页面出错了', String(err && err.message || err),
+            U.btn('回到首页', { kind: 'primary', onClick: function () { go('#/'); } }));
+        }
+
+        viewEl.appendChild(node);
+        if (target.view && target.view.mount) {
+          try { target.view.mount(); } catch (err) { console.error('[HZQ.app] 页面挂载失败', err); }
+          active = { view: target.view, mounted: true };
+        } else if (target.view) {
+          active = { view: target.view, mounted: false };
+        }
+
+        updateNav(route.parts);
+        document.title = pageTitle(route.parts) + ' · ' + (HZQ.i18n ? HZQ.i18n.t('app.title', '刷题') : '刷题');
+        window.scrollTo(0, 0);
+      }
+
+      function pageTitle(parts) {
+        var name = parts[0] || '';
+        var bank = parts[1] ? HZQ.data.bank(parts[1]) : null;
+        var t = HZQ.i18n ? HZQ.i18n.t : function (k, f) { return f; };
+        if (name === 'bank' && bank) return bank.title;
+        if (name === 'quiz' && bank) return bank.title + ' · ' + t('page.quiz', '答题');
+        if (name === 'result') return t('page.result', '练习结果');
+        if (name === 'wrong') return t('page.wrong', '错题本');
+        if (name === 'favorites') return t('page.favorites', '重点收藏');
+        if (name === 'history') return t('page.history', '成绩记录');
+        if (name === 'search') return t('page.search', '搜题');
+        if (name === 'quality') return t('page.quality', '数据体检');
+        if (name === 'settings') return t('page.settings', '设置与备份');
+        if (name === 'trial') return t('page.trial', '用户测试');
+        return t('page.home', '首页');
+      }
+
+      function updateNav(parts) {
+        var name = parts[0] || 'home';
+        if (name === 'bank' || name === 'quiz' || name === 'result') name = 'home';
+        Array.prototype.forEach.call(navEl.querySelectorAll('a'), function (a) {
+          var on = a.getAttribute('data-key') === name;
+          a.classList.toggle('on', on);
+          if (on) a.setAttribute('aria-current', 'page');
+          else a.removeAttribute('aria-current');
+        });
+      }
+
+      function missingPage() {
+        return U.empty('grid', '这个页面还没有接上',
+          '入口已经可以运行；现有 js/views 里暂时没有这个页面的视图。',
+          U.btn('回到首页', { kind: 'primary', icon: 'home', onClick: function () { go('#/'); } }));
+      }
+
+      /* ------------------------------ 会话 / 开始 ------------------------------ */
+      function start(opts) {
+        try {
+          var s = HZQ.engine.create(opts || {});
+          if (!HZQ.engine.total(s)) {
+            M.toast('这个范围还没有可练习的题目', 'bad');
+            return;
+          }
+          session = s;
+          HZQ.store.saveSession(HZQ.engine.snapshot(s));
+          go('#/quiz/' + s.bankId);
+        } catch (err) {
+          console.error('[HZQ.app] 开始练习失败', err);
+          M.toast('无法开始练习：' + (err && err.message || err), 'bad');
+        }
+      }
+
+      function setSession(s) { session = s || null; }
+      function currentSession() { return session; }
+
+      /* ------------------------------ 结果页 ------------------------------ */
+      function resultPage(id) {
+        var rec = HZQ.store.historyOf(id);
+        if (!rec) {
+          return U.empty('alert', '成绩记录不存在',
+            '可能记录已经被清除，或这个链接已经过期。',
+            U.btn('回到首页', { kind: 'primary', onClick: function () { go('#/'); } }));
+        }
+
+        var root = el('div');
+        root.appendChild(U.crumb('返回首页', function () { go('#/'); }));
+
+        var hero = el('div', { class: 'result-hero' });
+        var grade = el('div', { class: 'grade' });
+        grade.appendChild(U.ring(rec.accuracy, 84, M.pct(rec.accuracy)));
+        var g = el('div', { class: 'g ' + (rec.accuracy >= 0.8 ? 'ok' : (rec.accuracy >= 0.6 ? 'mid' : 'bad')) });
+        g.textContent = rec.accuracy >= 0.8 ? '表现不错' : (rec.accuracy >= 0.6 ? '继续加油' : '再练一轮');
+        grade.appendChild(g);
+        hero.appendChild(grade);
+
+        var info = el('div', { class: 'info' });
+        info.appendChild(el('h2', { text: rec.bankTitle + ' · ' + rec.modeName }));
+        info.appendChild(el('div', {
+          class: 'sub',
+          text: M.dateText(rec.finishedAt) + ' · 用时 ' + M.dur(rec.durationMs)
+        }));
+        var kv = el('div', { class: 'kv' });
+        [['答对', rec.correct + ' / ' + rec.total], ['答错', rec.wrong],
+         ['未答', rec.blank], ['正确率', M.pct(rec.accuracy)]].forEach(function (p) {
+          var d = el('div');
+          d.appendChild(el('div', { class: 'v', text: String(p[1]) }));
+          d.appendChild(el('div', { class: 'l', text: p[0] }));
+          kv.appendChild(d);
+        });
+        info.appendChild(kv);
+        hero.appendChild(info);
+        root.appendChild(hero);
+
+        var rows = HZQ.engine.breakdownFrom(rec.questionIds, rec.answers, 'type');
+        if (rows.length) {
+          root.appendChild(U.secTitle('分题型'));
+          var box = el('div', { class: 'breakdown' });
+          rows.forEach(function (r) {
+            var wrap = el('div', { class: 'bd-row' });
+            var cap = el('div', { class: 'cap' });
+            cap.appendChild(el('span', { class: 'nm', text: r.label }));
+            cap.appendChild(el('span', { class: 'vl', text: r.correct + ' / ' + r.total }));
+            wrap.appendChild(cap);
+            var ratio = r.total ? r.correct / r.total : 0;
+            var bar = el('div', { class: 'bar' + (ratio >= 0.8 ? ' ok' : '') });
+            bar.appendChild(el('i', { style: 'width:' + (ratio * 100).toFixed(1) + '%' }));
+            wrap.appendChild(bar);
+            box.appendChild(wrap);
+          });
+          root.appendChild(box);
+        }
+
+        var acts = el('div', { class: 'row-2', style: 'margin-top:20px' });
+        acts.appendChild(U.btn('再练一次', {
+          kind: 'primary', icon: 'play',
+          onClick: function () { go('#/bank/' + rec.bankId); }
+        }));
+        acts.appendChild(U.btn('回到首页', { icon: 'home', onClick: function () { go('#/'); } }));
+        root.appendChild(acts);
+        return root;
+      }
+
+      /* ------------------------------ 主题 ------------------------------ */
+      var DARK_THEMES = { dark: 1, midnight: 1 };
+      var FONT_MAP = {
+        system: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+        serif: 'Georgia, "Songti SC", "SimSun", serif',
+        rounded: '"Trebuchet MS", "PingFang SC", "Microsoft YaHei", sans-serif',
+        mono: '"Cascadia Code", Consolas, "SFMono-Regular", monospace'
+      };
+
+      function settingTheme() { return HZQ.store.settings().theme || 'auto'; }
+
+      function actualTheme(theme) {
+        if (!theme || theme === 'auto') {
+          return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        return theme;
+      }
+
+      function resolvedTheme() { return actualTheme(settingTheme()); }
+
+      function hexToRgba(hex, alpha) {
+        var m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(String(hex || ''));
+        if (!m) return '';
+        return 'rgba(' + parseInt(m[1], 16) + ', ' + parseInt(m[2], 16) + ', ' + parseInt(m[3], 16) + ', ' + alpha + ')';
+      }
+
+      function applyTheme(theme, persist) {
+        var actual = actualTheme(theme);
+        document.documentElement.setAttribute('data-theme', actual);
+        if (persist) HZQ.store.setSetting('theme', theme);
+        var dark = !!DARK_THEMES[actual];
+        themeBtn.innerHTML = M.icon(dark ? 'sun' : 'moon');
+        themeBtn.title = dark ? '切换到浅色模式' : '切换到深色模式';
+        themeBtn.setAttribute('aria-label', themeBtn.title);
+      }
+
+      function setTheme(theme) {
+        applyTheme(theme, true);
+        if (HZQ.store.markTrial) HZQ.store.markTrial('theme');
+      }
+
+      function toggleTheme() {
+        var dark = !!DARK_THEMES[resolvedTheme()];
+        var next = dark ? 'light' : 'dark';
+        setTheme(next);
+        M.toast(next === 'dark' ? '已切换到深色模式' : '已切换到浅色模式');
+      }
+
+      /* ------------------------------ 界面自定义 ------------------------------ */
+      function applyUI() {
+        var s = HZQ.store.settings();
+        var root = document.documentElement;
+        root.style.setProperty('--ui-gap', Math.max(4, Math.min(24, Number(s.uiGap) || 10)) + 'px');
+        root.style.setProperty('--ui-scale', Math.max(0.85, Math.min(1.2, Number(s.uiScale) || 1)));
+        root.style.setProperty('--content-opacity', Math.max(0.55, Math.min(1, Number(s.uiOpacity) || 1)));
+        root.style.setProperty('--ui-font', FONT_MAP[s.uiFont] || FONT_MAP.system);
+        root.setAttribute('data-comfort', s.antiDizzy ? 'on' : 'off');
+
+        if (s.uiPrimary) {
+          var soft = hexToRgba(s.uiPrimary, 0.14);
+          var ring = hexToRgba(s.uiPrimary, 0.28);
+          root.style.setProperty('--primary', s.uiPrimary);
+          root.style.setProperty('--primary-hover', s.uiPrimary);
+          if (soft) root.style.setProperty('--primary-soft', soft);
+          if (ring) root.style.setProperty('--primary-ring', ring);
+        } else {
+          root.style.removeProperty('--primary');
+          root.style.removeProperty('--primary-hover');
+          root.style.removeProperty('--primary-soft');
+          root.style.removeProperty('--primary-ring');
+        }
+        if (s.uiBg) root.style.setProperty('--bg', s.uiBg);
+        else root.style.removeProperty('--bg');
+        if (s.uiBgImage) root.style.setProperty('--ui-bg-image', 'url("' + s.uiBgImage + '")');
+        else root.style.removeProperty('--ui-bg-image');
+      }
+
+      /* ------------------------------ 语言 / 导航 ------------------------------ */
+      function orderedNav() {
+        var order = HZQ.store.settings().uiNavOrder || [];
+        return NAV.slice().sort(function (a, b) {
+          var ia = order.indexOf(a.key), ib = order.indexOf(b.key);
+          if (ia < 0) ia = 999;
+          if (ib < 0) ib = 999;
+          return ia - ib;
+        });
+      }
+
+      function refreshNav() {
+        var t = HZQ.i18n ? HZQ.i18n.t : function (k, f) { return f; };
+        if (HZQ.i18n) document.documentElement.lang = HZQ.i18n.lang() === 'zh' ? 'zh-CN' : HZQ.i18n.lang();
+        navEl.innerHTML = '';
+        orderedNav().forEach(function (d) {
+          var label = t('nav.' + d.key, d.label);
+          var a = el('a', { href: d.href, 'data-key': d.key, 'aria-label': label });
+          a.innerHTML = M.icon(d.icon) + '<span>' + label + '</span>';
+          navEl.appendChild(a);
+        });
+        var name = HZQ.profile ? HZQ.profile.current() : null;
+        accountBtn.innerHTML = M.icon('user');
+        accountBtn.title = name ? ('账户：' + name) : t('account.login', '登录');
+        accountBtn.setAttribute('aria-label', accountBtn.title);
+      }
+
+      /* ------------------------------ 日落后深色提醒 ------------------------------ */
+      function estimatedSunsetHour() {
+        // 按月份估算当地日落时间；无需联网，也不申请定位权限。
+        var table = [17.4, 17.7, 18.1, 18.6, 19.0, 19.3, 19.2, 18.7, 18.2, 17.6, 17.3, 17.2];
+        return table[new Date().getMonth()] || 18;
+      }
+
+      function maybePromptDusk() {
+        var s = HZQ.store.settings();
+        if (!s.darkPrompt) return;
+        if (DARK_THEMES[resolvedTheme()]) return;
+        var now = new Date();
+        var hour = now.getHours() + now.getMinutes() / 60;
+        var darkTime = hour >= estimatedSunsetHour() || hour < 6;
+        if (!darkTime) return;
+        var day = now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+        if (s.darkPromptDate === day) return;
+        HZQ.store.setSetting('darkPromptDate', day);
+
+        var t = HZQ.i18n ? HZQ.i18n.t : function (k, f) { return f; };
+        var body = el('div');
+        body.appendChild(el('p', { text: t('theme.body', '你所在的时区已经进入傍晚，深色背景会更适合阅读。') }));
+        var grid = el('div', { class: 'theme-grid', style: 'margin-top:14px' });
+        [
+          { id: 'dark', name: t('theme.dark', '开启深色'), color: '#0e1014' },
+          { id: 'midnight', name: t('theme.midnight', '午夜紫'), color: '#101321' },
+          { id: 'ocean', name: '海盐蓝', color: '#0e7490' },
+          { id: 'sakura', name: '樱花粉', color: '#db2777' }
+        ].forEach(function (item) {
+          var b = el('button', { class: 'theme-card', type: 'button' });
+          b.appendChild(el('span', { class: 'theme-swatch', style: 'background:' + item.color }));
+          b.appendChild(el('span', { class: 'theme-body' }, [el('span', { class: 't', text: item.name })]));
+          b.addEventListener('click', function () {
+            setTheme(item.id);
+            M.closeOverlay();
+            M.toast('已切换到「' + item.name + '」', 'ok');
+          });
+          grid.appendChild(b);
+        });
+        body.appendChild(grid);
+        M.openSheet({
+          title: t('theme.title', '要切换到深色模式吗？'),
+          body: body,
+          actions: [
+            { text: t('theme.light', '保持浅色'), onClick: function (close) { close(); } },
+            { text: t('theme.settings', '去设置选择颜色'), onClick: function (close) { close(); go('#/settings'); } },
+            { text: t('theme.disable', '以后不再提醒'), onClick: function (close) {
+              HZQ.store.setSetting('darkPrompt', false);
+              close();
+              M.toast('已关闭日落后提醒', 'ok');
+            } }
+          ]
+        });
+      }
+
+      /* ------------------------------ 番茄钟 / 休息提醒 ------------------------------ */
+      var pomo = { timer: null, left: 0, mode: 'work' };
+      var quizActiveMs = 0;
+
+      function pomoText() {
+        return (pomo.mode === 'break' ? '休息' : '专注') + ' ' + M.dur(pomo.left * 1000);
+      }
+
+      function renderPomo() {
+        if (!pomo.timer) { pomoRoot.hidden = true; pomoRoot.innerHTML = ''; return; }
+        pomoRoot.hidden = false;
+        pomoRoot.innerHTML = '<span>' + pomoText() + '</span><button type="button" class="btn sm ghost">停止</button>';
+        pomoRoot.querySelector('button').addEventListener('click', stopPomodoro);
+      }
+
+      function tickPomodoro() {
+        if (!pomo.timer) return;
+        pomo.left -= 1;
+        if (pomo.left <= 0) {
+          if (pomo.mode === 'work') {
+            var bm = Math.max(1, Number(HZQ.store.settings().pomoBreak) || 5);
+            M.toast('专注结束，休息 ' + bm + ' 分钟', 'ok');
+            startPomodoro('break', bm);
+          } else {
+            M.toast('休息结束，准备继续', 'ok');
+            stopPomodoro();
+          }
+          return;
+        }
+        renderPomo();
+      }
+
+      function startPomodoro(mode, minutes) {
+        if (pomo.timer) { clearInterval(pomo.timer); pomo.timer = null; }
+        pomo.mode = mode === 'break' ? 'break' : 'work';
+        var s = HZQ.store.settings();
+        var m = Math.max(1, Number(minutes) || (pomo.mode === 'break' ? s.pomoBreak : s.pomoWork) || (pomo.mode === 'break' ? 5 : 25));
+        pomo.left = m * 60;
+        pomo.timer = setInterval(tickPomodoro, 1000);
+        renderPomo();
+        M.toast((pomo.mode === 'break' ? '休息' : '专注') + '计时开始 · ' + m + ' 分钟', 'ok');
+      }
+
+      function stopPomodoro() {
+        if (pomo.timer) clearInterval(pomo.timer);
+        pomo.timer = null;
+        pomo.left = 0;
+        renderPomo();
+      }
+
+      function showBreakReminder() {
+        M.openSheet({
+          title: '连续做题 2 小时了',
+          body: el('div', {}, [
+            el('p', { text: '起来走一走、看看远处，休息 5–10 分钟再继续，记忆效率会更高。' }),
+            el('p', { class: 'tiny muted', style: 'margin-top:8px', text: '考试模式不会触发这个提醒。' })
+          ]),
+          actions: [
+            { text: '继续答题', onClick: function (close) { close(); } },
+            { text: '休息 5 分钟', kind: 'primary', onClick: function (close) { close(); startPomodoro('break', 5); } },
+            { text: '关闭此类提醒', onClick: function (close) {
+              HZQ.store.setSetting('breakReminder', false);
+              close();
+              M.toast('已关闭休息提醒', 'ok');
+            } }
+          ]
+        });
+      }
+
+      function startBreakWatch() {
+        setInterval(function () {
+          var s = HZQ.store.settings();
+          if (!s.breakReminder) { quizActiveMs = 0; return; }
+          if (!active || active.view !== HZQ.views.quiz || !session || session.mode === 'exam') {
+            quizActiveMs = 0;
+            return;
+          }
+          quizActiveMs += 60000;
+          if (quizActiveMs >= 7200000) {
+            quizActiveMs = 0;
+            showBreakReminder();
+          }
+        }, 60000);
+      }
+
+      /* ------------------------------ 搜题 ------------------------------ */
+      function openSearch() { go('#/search'); }
+
+      /* ------------------------------ 初始化 ------------------------------ */
+      function initNav() { refreshNav(); }
+
+      function init() {
+        if (HZQ.profile) HZQ.profile.init();
+        applyTheme(settingTheme(), false);
+        applyUI();
+        if (HZQ.views.quality && HZQ.views.quality.syncFixes) HZQ.views.quality.syncFixes();
+        if (HZQ.store.settings().font && HZQ.store.settings().font !== document.documentElement.getAttribute('data-font')) {
+          document.documentElement.setAttribute('data-font', HZQ.store.settings().font);
+        }
+        initNav();
+        if (HZQ.audio) HZQ.audio.setVolume(HZQ.store.settings().audioVolume);
+        themeBtn.addEventListener('click', toggleTheme);
+        accountBtn.addEventListener('click', function () {
+          if (HZQ.profile && HZQ.profile.current()) {
+            go('#/settings');
+            M.toast('当前账户：' + HZQ.profile.current(), 'ok');
+          } else if (HZQ.profile) {
+            HZQ.profile.dialog('login', function () { location.reload(); });
+          }
+        });
+        window.addEventListener('hashchange', render);
+        render();
+        startBreakWatch();
+        setTimeout(maybePromptDusk, 1400);
+      }
+
+      return {
+        init: init,
+        go: go,
+        start: start,
+        session: currentSession,
+        setSession: setSession,
+        toggleTheme: toggleTheme,
+        setTheme: setTheme,
+        setLanguage: function (lang) {
+          if (HZQ.i18n) HZQ.i18n.setLang(lang);
+          refreshNav();
+          render();
+        },
+        applyUI: applyUI,
+        refreshNav: refreshNav,
+        openSearch: openSearch,
+        startPomodoro: startPomodoro,
+        stopPomodoro: stopPomodoro,
+        pomodoroState: function () { return { running: !!pomo.timer, mode: pomo.mode, left: pomo.left }; }
+      };
+    })();
+    if (HZQ.app && HZQ.app.init) HZQ.app.init();
+  </script>
+</body>
+</html>
