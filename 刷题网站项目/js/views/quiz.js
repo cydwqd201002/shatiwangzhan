@@ -376,6 +376,15 @@ HZQ.views.quiz = (function () {
       if (res.reason === 'empty') M.toast('先选一个答案再提交');
       return;
     }
+    if (res.deferred) {
+      // 非即时模式：只记下选择，对错等交卷再说
+      paint();
+      M.toast('已记录这道题，交卷后统一判分');
+      if (s.autoNext && HZQ.engine.hasNext(s)) {
+        setTimeout(function () { go(1); }, 320);
+      }
+      return;
+    }
     if (res.already) {
       // 幂等：重复提交不改变成绩，只提示一下
       M.toast('这道题已经提交过了，成绩不会重复计算');
