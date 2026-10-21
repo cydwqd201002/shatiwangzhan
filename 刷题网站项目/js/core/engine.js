@@ -202,6 +202,17 @@ HZQ.engine = (function () {
     if (!q) return { ok: false, reason: 'no-question' };
     var r = rec(s, q.id);
     if (!r.picked.length) return { ok: false, reason: 'empty' };
+
+    /*
+     * 非即时模式（模拟考试、以及关掉「边做边判」的练习）只记下选了哪个，
+     * 不判分、不写全局进度、也不进错题本，等交卷时统一处理。
+     * 否则考试中途打开答题卡就能看到对错，错题本也会被还没交的题塞满。
+     */
+    if (!s.instant) {
+      r.answered = true;
+      return { ok: true, deferred: true, question: q };
+    }
+
     if (r.submitted) {
       r.attempts += 1;
       return { ok: true, already: true, grade: r.grade, question: q };
@@ -242,11 +253,11 @@ HZQ.engine = (function () {
   function prev(s) { return s.index > 0 ? goTo(s, s.index - 1) : null; }
   function hasNext(s) { return s.index < total(s) - 1; }
   function hasPrev(s) { return s.index > 0; }
-  /** 第一道"还没提交"的题，交卷前跳转用 */
+  /** 第一道"还没作答"的题，交卷前跳转用。选过但没判分的也算答过。 */
   function firstUnanswered(s) {
     for (var i = 0; i < s.questionIds.length; i++) {
       var r = s.answers[s.questionIds[i]];
-      if (!r || !r.submitted) return i;
+      if (!r || (!r.submitted && !r.answered)) return i;
     }
     return -1;
   }
